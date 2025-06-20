@@ -48,3 +48,28 @@ def view_entry():
         entry = json.load(f)
     panel = Panel(f"[b]What I did:[/b] {entry['did']}\n[b]What I'll do:[/b] {entry['will_do']}\n[b]Blockers:[/b] {entry['blockers']}\n[b]Tags:[/b] {', '.join(entry['tags']) if entry['tags'] else '-'}\n[b]Date:[/b] {entry['date']}", title="Today's Log", expand=False)
     console.print(panel)
+
+
+def main_menu():
+    while True:
+        reminder()
+        console.print("\n[bold cyan]StandLog CLI[/bold cyan]", style="bold")
+        console.print("[1] Log today's standup\n[2] View today's log\n[3] Stats/Export/Reminder\n[4] Quit")
+        choice = Prompt.ask("Choose an option", choices=["1", "2", "3", "4"], default="1")
+        if choice == "1":
+            log_entry()
+        elif choice == "2":
+            view_entry()
+        elif choice == "3":
+            viewer_menu()
+        elif choice == "4":
+            console.print("[bold yellow]Goodbye![/bold yellow]")
+            break
+
+
+def main():
+    ensure_data_dir()
+    main_menu()
+
+if __name__ == "__main__":
+    main()
