@@ -1,27 +1,50 @@
-# Viewer UI for StandLog CLI
+# StandLog CLI - All-in-one
+from ui.viewer import viewer_menu, reminder
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt
-from rich import box
 from datetime import datetime
 import os
 import json
-from cryptography.fernet import Fernet, InvalidToken
-import base64
-import getpass
-import subprocess
-import glob
-from datetime import timedelta
-try:
-    import ics
-except ImportError:
-    ics = None
+import yagmail
+import sounddevice as sd
+from scipy.io.wavfile import write, read as wavread
+import tempfile
+import shutil
+import re
+from collections import defaultdict
 
-BADGES_PATH = os.path.expanduser("~/.standlog/badges.json")
 DATA_DIR = os.path.expanduser("~/.standlog/entries")
-ENCRYPTION_KEY_PATH = os.path.expanduser("~/.standlog/.key")
+GOALS_PATH = os.path.expanduser("~/.standlog/goals.json")
+BADGES_PATH = os.path.expanduser("~/.standlog/badges.json")
+EMAIL_CONFIG_PATH = os.path.expanduser("~/.standlog/email.json")
+VOICE_DIR = os.path.expanduser("~/.standlog/voice_notes")
+AUTOMATION_RULES_PATH = os.path.expanduser("~/.standlog/automation_rules.json")
+os.makedirs(VOICE_DIR, exist_ok=True)
 console = Console()
+
+
+def ensure_data_dir():
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def get_today_path():
+    today = datetime.now().strftime("%Y-%m-%d")
+    return os.path.join(DATA_DIR, f"{today}.json")
+
+
+def multiline_input(prompt):
+    panel = Panel(f"{prompt}\n(Press Enter twice to finish)", style="bold white on black", expand=False)
+    console.print(panel)
+    lines = []
+    while True:
+        line = input()
+        if line == "":
+            if lines:
+                break
+        lines.append(line)
+    return "\n".join(lines)
+
 
 # Helper to load/save badges
 
@@ -49,333 +72,486 @@ def show_badges():
     badge_lines = [f"🏅 [green]{b}[/green] ([dim]{badges[b]}[/dim])" for b in badges]
     console.print(Panel("\n".join(badge_lines), title="Achievements & Badges", style="bold magenta", expand=False))
 
-def list_entry_files():
-    if not os.path.exists(DATA_DIR):
-        return []
-    return sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json')])
 
-
-def get_fernet():
-    if not os.path.exists(ENCRYPTION_KEY_PATH):
-        return None
-    with open(ENCRYPTION_KEY_PATH, "rb") as f:
-        key = f.read()
-    return Fernet(key)
-
-
-def set_encryption():
-    passphrase = getpass.getpass("Set a passphrase for encryption: ")
-    key = base64.urlsafe_b64encode(passphrase.encode().ljust(32, b'0'))
-    with open(ENCRYPTION_KEY_PATH, "wb") as f:
-        f.write(key)
-    console.print("[green]Encryption enabled![/green]")
-
-
-def unset_encryption():
-    if os.path.exists(ENCRYPTION_KEY_PATH):
-        os.remove(ENCRYPTION_KEY_PATH)
-        console.print("[yellow]Encryption disabled.[/yellow]")
-    else:
-        console.print("[yellow]Encryption was not enabled.[/yellow]")
-
-
-def encrypt_data(data):
-    f = get_fernet()
-    if not f:
-        return data.encode()
-    return f.encrypt(data.encode())
-
-
-def decrypt_data(data):
-    f = get_fernet()
-    if not f:
-        return data.decode()
+def record_voice_note():
+    fs = 44100  # Sample rate
     try:
-        return f.decrypt(data).decode()
-    except InvalidToken:
-        console.print("[red]Invalid passphrase or corrupted data![/red]")
-        return "[decryption failed]"
-
-
-def load_entry(filename):
-    try:
-        path = os.path.join(DATA_DIR, filename)
-        with open(path, "rb") as f:
-            raw = f.read()
-        try:
-            # Try to decode as utf-8 (plain)
-            return json.loads(raw.decode())
-        except Exception:
-            # Try to decrypt
-            text = decrypt_data(raw)
-            return json.loads(text)
+        devices = sd.query_devices()
+        input_devices = [d for d in devices if d.get('max_input_channels', 0) > 0]
+        if not input_devices:
+            console.print("[yellow]No input device (microphone) found. Cannot record voice note.[/yellow]")
+            return None
     except Exception as e:
-        console.print(f"[red]Error loading {filename}: {e}[/red]")
+        console.print(f"[yellow]Could not query audio devices: {e}. Cannot record voice note.[/yellow]")
         return None
-
-
-def save_entry(filename, entry):
-    path = os.path.join(DATA_DIR, filename)
-    data = json.dumps(entry, indent=2)
-    enc = encrypt_data(data)
-    with open(path, "wb") as f:
-        f.write(enc)
-
-
-def feedback_path(entry_file):
-    return os.path.join(DATA_DIR, entry_file.replace('.json', '.feedbacks.json'))
-
-
-def leave_feedback(entry_file):
-    fb_path = feedback_path(entry_file)
-    feedback = Prompt.ask("Enter your feedback (or encouragement)")
-    user = Prompt.ask("Your name (optional)", default="Anonymous")
-    fb_entry = {"user": user, "feedback": feedback, "time": datetime.now().strftime("%Y-%m-%d %H:%M")}
-    feedbacks = []
-    if os.path.exists(fb_path):
-        with open(fb_path, "rb") as f:
-            raw = f.read()
-        try:
-            feedbacks = json.loads(raw.decode())
-        except Exception:
-            text = decrypt_data(raw)
-            feedbacks = json.loads(text)
-    feedbacks.append(fb_entry)
-    enc = encrypt_data(json.dumps(feedbacks, indent=2))
-    with open(fb_path, "wb") as f:
-        f.write(enc)
-    console.print("[green]Feedback added![/green]")
-    award_badge("Feedback Given")
-
-
-def view_feedback(entry_file):
-    fb_path = feedback_path(entry_file)
-    if not os.path.exists(fb_path):
-        console.print("[yellow]No feedback yet for this entry.[/yellow]")
-        return
-    with open(fb_path, "rb") as f:
-        raw = f.read()
+    seconds = Prompt.ask("Record for how many seconds?", default="10")
     try:
-        feedbacks = json.loads(raw.decode())
+        seconds = int(seconds)
     except Exception:
-        text = decrypt_data(raw)
-        feedbacks = json.loads(text)
-    table = Table(title=f"Feedback for {entry_file.replace('.json','')}", box=box.SIMPLE)
-    table.add_column("User", style="cyan")
-    table.add_column("Feedback", style="magenta")
-    table.add_column("Time", style="dim")
-    for fb in feedbacks:
-        table.add_row(fb.get("user","?"), fb.get("feedback",""), fb.get("time",""))
-    console.print(table)
-    if feedbacks:
-        award_badge("Feedback Received")
+        seconds = 10
+    console.print(f"[cyan]Recording for {seconds} seconds... Speak now![/cyan]")
+    try:
+        recording = sd.rec(int(seconds * fs), samplerate=fs, channels=1, dtype='int16')
+        sd.wait()
+    except Exception as e:
+        console.print(f"[yellow]Audio recording failed: {e}[/yellow]")
+        return None
+    tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+    write(tmpfile.name, fs, recording)
+    tmpfile.close()
+    return tmpfile.name
 
+def save_voice_note_to_log(log_path, wav_path):
+    if not os.path.exists(wav_path):
+        return None
+    dest = os.path.join(VOICE_DIR, os.path.basename(log_path).replace('.json', '.wav'))
+    shutil.move(wav_path, dest)
+    return dest
 
-def show_weekly_stats():
-    files = list_entry_files()
-    last_7 = files[-7:]
-    if not last_7:
-        console.print("[red]No logs found for the past week.[/red]")
+def play_voice_note(log_path):
+    wav_path = os.path.join(VOICE_DIR, os.path.basename(log_path).replace('.json', '.wav'))
+    if not os.path.exists(wav_path):
+        console.print("[yellow]No voice note for this log.[/yellow]")
         return
-    table = Table(title="Weekly StandLog Stats", box=box.ROUNDED)
-    table.add_column("Date", style="cyan")
-    table.add_column("Did", style="green")
-    table.add_column("Blockers", style="red")
-    blockers_count = {}
+    fs, data = wavread(wav_path)
+    console.print("[cyan]Playing voice note...[/cyan]")
+    sd.play(data, fs)
+    sd.wait()
+
+
+def log_entry():
+    console.print(Panel("[bold cyan]StandLog CLI - Daily Standup[/bold cyan]", expand=False))
+    did = multiline_input("What did you work on today?")
+    will_do = multiline_input("What will you work on next?")
+    blockers = multiline_input("Any blockers?")
+    tags = Prompt.ask("[magenta]Tags (comma separated, optional)[/magenta]", default="")
+    notes = multiline_input("Any additional notes? (optional)")
+    # Time tracking
+    time_spent = Prompt.ask("[yellow]Time spent today (in minutes, e.g. 90)[/yellow]", default="0")
+    try:
+        time_spent = int(time_spent)
+    except Exception:
+        time_spent = 0
+    attach_voice = Prompt.ask("Record a voice note? (y/n)", choices=["y","n"], default="n")
+    voice_path = None
+    if attach_voice == "y":
+        wav_path = record_voice_note()
+        voice_path = wav_path
+    entry = {
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "did": did,
+        "will_do": will_do,
+        "blockers": blockers,
+        "tags": [t.strip() for t in tags.split(",") if t.strip()],
+        "notes": notes,
+        "voice_note": None,
+        "time_spent": time_spent
+    }
+    path = get_today_path()
+    is_first_log = not os.path.exists(path)
+    with open(path, "w") as f:
+        json.dump(entry, f, indent=2)
+    if voice_path:
+        dest = save_voice_note_to_log(path, voice_path)
+        entry["voice_note"] = dest
+        with open(path, "w") as f:
+            json.dump(entry, f, indent=2)
+    console.print("[bold green]Entry saved![/bold green]")
+    if is_first_log:
+        award_badge("First Log")
+    # Streak badge
+    import re
+    files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json') and re.match(r'\d{4}-\d{2}-\d{2}\.json$', f)])
     streak = 0
-    prev_date = None
-    for fname in last_7:
-        entry = load_entry(fname)
-        if not entry:
-            continue
-        date = fname.replace('.json', '')
-        table.add_row(date, entry['did'][:20], entry['blockers'][:20])
-        if entry['blockers']:
-            for word in entry['blockers'].split():
-                blockers_count[word] = blockers_count.get(word, 0) + 1
-        # Streak calculation
-        d = datetime.strptime(date, "%Y-%m-%d")
-        if prev_date is None or (d - prev_date).days == 1:
-            streak += 1
-        else:
-            streak = 1
-        prev_date = d
-    console.print(table)
-    if blockers_count:
-        common = max(blockers_count, key=blockers_count.get)
-        console.print(f"[bold yellow]Most common blocker:[/bold yellow] {common}")
-    console.print(f"[bold green]Logging streak:[/bold green] {streak} days")
-
-
-def export_logs(fmt="md"):
-    files = list_entry_files()
-    if not files:
-        console.print("[red]No logs to export.[/red]")
-        return
-    if fmt == "md":
-        out = "# StandLog Journal\n\n"
-        for fname in files:
-            entry = load_entry(fname)
-            if not entry:
-                continue
-            out += f"## {fname.replace('.json', '')}\n- **Did:** {entry['did']}\n- **Will do:** {entry['will_do']}\n- **Blockers:** {entry['blockers']}\n- **Tags:** {', '.join(entry['tags']) if entry['tags'] else '-'}\n\n"
-        md_path = os.path.expanduser("~/.standlog/journal.md")
-        os.makedirs(os.path.dirname(md_path), exist_ok=True)
-        with open(md_path, "w") as f:
-            f.write(out)
-        console.print(f"[green]Exported to {md_path}[/green]")
-    elif fmt == "json":
-        all_entries = [load_entry(f) for f in files if load_entry(f)]
-        json_path = os.path.expanduser("~/.standlog/journal.json")
-        os.makedirs(os.path.dirname(json_path), exist_ok=True)
-        with open(json_path, "w") as f:
-            json.dump(all_entries, f, indent=2)
-        console.print(f"[green]Exported to {json_path}[/green]")
-
-
-def reminder():
-    today = datetime.now().strftime("%Y-%m-%d")
-    today_path = os.path.join(DATA_DIR, f"{today}.json")
-    already_logged = os.path.exists(today_path)
-    context_msgs = []
-    # Calendar event check (local .ics file)
-    ics_files = glob.glob(os.path.expanduser("~/*.ics"))
-    if ics is None:
-        context_msgs.append("[red]Install the 'ics' package for calendar-based reminders: pip install ics[/red]")
-    elif ics_files:
-        for ics_file in ics_files:
-            try:
-                with open(ics_file) as f:
-                    cal = ics.Calendar(f.read())
-                for event in cal.timeline.today():
-                    context_msgs.append(f"You had a calendar event today: {event.name}")
-            except Exception:
-                pass
-    # Git activity check (commits today)
-    try:
-        git_dir = os.path.expanduser("~")
-        result = subprocess.run([
-            "git", "--no-pager", "log", "--since=midnight", "--pretty=oneline"
-        ], cwd=git_dir, capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip():
-            context_msgs.append("You made git commits today!")
-    except Exception:
-        pass
-    # System usage check (uptime > 2h today)
-    try:
-        uptime = subprocess.check_output(["uptime", "-p"]).decode()
-        if "hour" in uptime or "hours" in uptime:
-            context_msgs.append(f"You've been active for: {uptime.strip()}")
-    except Exception:
-        pass
-    if not already_logged:
-        if context_msgs:
-            console.print("[bold blink yellow]Context-Aware Reminder:[/bold blink yellow]")
-            for msg in context_msgs:
-                console.print(f"[cyan]- {msg}[/cyan]")
-            console.print("[bold blink red]Don't forget to log your day![/bold blink red]")
-        else:
-            console.print("[bold blink red]Reminder: Don't forget to log your day![/bold blink red]")
-    else:
-        console.print("[green]You have already logged today![/green]")
-
-
-def show_heatmap():
-    files = list_entry_files()
-    if not files:
-        console.print("[red]No logs to visualize.[/red]")
-        return
-    from collections import defaultdict
-    from rich.text import Text
-    from rich.columns import Columns
-    from datetime import date as dtdate
-    import calendar
-    year = datetime.now().year
-    log_days = defaultdict(int)
+    prev = None
     for fname in files:
         date = fname.replace('.json', '')
-        log_days[date] += 1
-    # Calculate streaks
-    all_dates = sorted(log_days.keys())
-    streak = 0
-    max_streak = 0
-    prev = None
-    for d in all_dates:
-        d_obj = datetime.strptime(d, "%Y-%m-%d")
+        try:
+            d_obj = datetime.strptime(date, "%Y-%m-%d")
+        except Exception:
+            continue
         if prev and (d_obj - prev).days == 1:
             streak += 1
         else:
             streak = 1
-        if streak > max_streak:
-            max_streak = streak
         prev = d_obj
-    # Color gradient: 1 log = green, 2 = yellow, 3+ = red, no log = grey
-    months = []
-    for month in range(1, 13):
-        cal = calendar.monthcalendar(year, month)
-        month_name = calendar.month_abbr[month]
-        lines = [f"[bold]{month_name}[/bold]"]
-        for week in cal:
-            week_str = ""
-            for day in week:
-                if day == 0:
-                    week_str += "   "
-                else:
-                    dstr = f"{year}-{month:02d}-{day:02d}"
-                    count = log_days.get(dstr, 0)
-                    if count == 0:
-                        week_str += "[grey]·[/grey] "
-                    elif count == 1:
-                        week_str += "[color(46)]■[/color(46)] "  # green
-                    elif count == 2:
-                        week_str += "[color(226)]■[/color(226)] "  # yellow
-                    else:
-                        week_str += "[color(196)]■[/color(196)] "  # red
-            lines.append(week_str)
-        months.append(Text("\n".join(lines)))
-    legend = Text("[color(46)]■[/color(46)] 1 log  [color(226)]■[/color(226)] 2 logs  [color(196)]■[/color(196)] 3+ logs  [grey]·[/grey] no log", justify="center")
-    stats = f"[cyan]Total logs:[/cyan] {len(files)}   [cyan]Longest streak:[/cyan] {max_streak} days"
-    console.print(Panel(Columns(months, equal=True, expand=True), title="Journal Activity Heatmap", expand=True))
-    console.print(legend)
-    console.print(stats)
+    if streak >= 3:
+        award_badge(f"{streak}-Day Streak")
 
 
-def viewer_menu():
+def view_entry():
+    path = get_today_path()
+    if not os.path.exists(path):
+        console.print("[red]No entry for today yet.[/red]")
+        return
+    with open(path) as f:
+        entry = json.load(f)
+    panel = Panel(f"[b]What I did:[/b] {entry['did']}\n[b]What I'll do:[/b] {entry['will_do']}\n[b]Blockers:[/b] {entry['blockers']}\n[b]Tags:[/b] {', '.join(entry['tags']) if entry['tags'] else '-'}\n[b]Notes:[/b] {entry.get('notes','-')}\n[b]Date:[/b] {entry['date']}", title="Today's Log", expand=False)
+    console.print(panel)
+    if entry.get("voice_note") or os.path.exists(os.path.join(VOICE_DIR, os.path.basename(path).replace('.json', '.wav'))):
+        play = Prompt.ask("Play attached voice note? (y/n)", choices=["y","n"], default="n")
+        if play == "y":
+            play_voice_note(path)
+
+
+def set_weekly_goals():
+    console.print(Panel("[bold yellow]Set your goals for this week! (Enter one per line, Enter twice to finish)[/bold yellow]", expand=False))
+    goals = []
     while True:
-        console.print("\n[bold cyan]StandLog Viewer[/bold cyan]")
-        console.print("[1] Show weekly stats\n[2] Export as Markdown\n[3] Export as JSON\n[4] Reminder\n[5] Leave feedback\n[6] View feedback\n[7] Enable encryption\n[8] Disable encryption\n[9] Visualize journal (heatmap)\n[10] Back")
-        choice = Prompt.ask("Choose an option", choices=[str(i) for i in range(1,11)], default="1")
+        line = input()
+        if line == "":
+            if goals:
+                break
+        goals.append({"goal": line, "done": False})
+    with open(GOALS_PATH, "w") as f:
+        json.dump(goals, f, indent=2)
+    console.print("[green]Goals saved![/green]")
+
+
+def mark_goal_progress():
+    if not os.path.exists(GOALS_PATH):
+        console.print("[yellow]No goals set for this week.[/yellow]")
+        return
+    with open(GOALS_PATH) as f:
+        goals = json.load(f)
+    if not goals:
+        console.print("[yellow]No goals set for this week.[/yellow]")
+        return
+    console.print("[bold cyan]Your Weekly Goals:[/bold cyan]")
+    for idx, g in enumerate(goals):
+        status = "[green]✔[/green]" if g["done"] else "[red]✗[/red]"
+        console.print(f"[{idx+1}] {g['goal']} {status}")
+    idxs = Prompt.ask("Enter goal numbers to mark as done (comma separated)", default="")
+    if idxs.strip():
+        for i in idxs.split(","):
+            try:
+                goals[int(i)-1]["done"] = True
+            except Exception:
+                pass
+        with open(GOALS_PATH, "w") as f:
+            json.dump(goals, f, indent=2)
+        console.print("[green]Progress updated![/green]")
+
+
+def show_goal_progress():
+    if not os.path.exists(GOALS_PATH):
+        return
+    with open(GOALS_PATH) as f:
+        goals = json.load(f)
+    if not goals:
+        return
+    done = sum(1 for g in goals if g["done"])
+    total = len(goals)
+    percent = int((done/total)*100) if total else 0
+    bar = "[green]" + "█"*done + "[/green][white]" + "█"*(total-done) + "[/white]"
+    console.print(Panel(f"[bold]Weekly Goals Progress:[/bold]\n{bar} {done}/{total} ({percent}%)", style="bold blue", expand=False))
+
+
+def print_ascii_art():
+    from rich.text import Text
+    from rich.align import Align
+    from rich.style import Style
+    from rich.panel import Panel
+    from rich.console import Group
+    import time
+    art_lines = [
+        ("   _____ _             _      _                _     _     _ ", "magenta"),
+        ("  / ____| |           | |    | |              | |   | |   | |", "blue"),
+        (" | (___ | |_ __ _ _ __| | __ | |     ___   ___| | __| | __| |", "cyan"),
+        ("  \\___ \\| __/ _` | '__| |/ / | |    / _ \\ / __| |/ _` |/ _` |", "green"),
+        ("  ____) | || (_| | |  |   <  | |___| (_) | (__| | (_| | (_| |", "yellow"),
+        (" |_____/ \\__\\__,_|_|  |_|\\_\\ |______\\___/ \\___|_|\\__,_|\\__,_|", "red")
+    ]
+    art = "\n".join([f"[bold {color}]{line}[/bold {color}]" for line, color in art_lines])
+    # Colorful square ASCII clock
+    from datetime import datetime
+    now = datetime.now()
+    date_str = now.strftime("%A, %d %B %Y")
+    time_str = now.strftime("%H:%M:%S")
+    clock_art = f"""
+[bold white]┌───────────────┐
+│   [cyan]{time_str}[/cyan]   │
+│ [yellow]{date_str}[/yellow] │
+└───────────────┘[/bold white]
+"""
+    # Footer
+    footer = Align.center("[dim]made with :heart: by dev for dev[/dim]", style="bold magenta")
+    # Group all together
+    group = Group(
+        Align.center(Text.from_markup(art)),
+        Align.center(Text.from_markup(clock_art)),
+        Align.center("[bold cyan]Welcome to StandLog CLI![/bold cyan] :notebook_with_decorative_cover: :sparkles:"),
+        Align.center("[dim]Your beautiful terminal developer journal[/dim]"),
+        footer,
+        Text("\n")
+    )
+    console.print(group)
+
+
+def search_logs():
+    files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json')])
+    if not files:
+        console.print("[red]No logs to search.[/red]")
+        return
+    console.print(Panel("[bold cyan]Search Logs[/bold cyan]", expand=False))
+    mode = Prompt.ask("Search by", choices=["keyword", "tag", "date"], default="keyword")
+    results = []
+    if mode == "keyword":
+        kw = Prompt.ask("Enter keyword").lower()
+        for fname in files:
+            with open(os.path.join(DATA_DIR, fname)) as f:
+                entry = json.load(f)
+            if not isinstance(entry, dict):
+                continue
+            if (kw in entry.get("did", "").lower() or
+                kw in entry.get("will_do", "").lower() or
+                kw in entry.get("blockers", "").lower() or
+                kw in entry.get("notes", "").lower()):
+                results.append((fname, entry))
+    elif mode == "tag":
+        tag = Prompt.ask("Enter tag").lower()
+        for fname in files:
+            with open(os.path.join(DATA_DIR, fname)) as f:
+                entry = json.load(f)
+            if not isinstance(entry, dict):
+                continue
+            tags = [t.lower() for t in entry.get("tags", [])]
+            if tag in tags:
+                results.append((fname, entry))
+    elif mode == "date":
+        start = Prompt.ask("Start date (YYYY-MM-DD)", default=files[0].replace('.json',''))
+        end = Prompt.ask("End date (YYYY-MM-DD)", default=files[-1].replace('.json',''))
+        for fname in files:
+            date = fname.replace('.json','')
+            with open(os.path.join(DATA_DIR, fname)) as f:
+                entry = json.load(f)
+            if not isinstance(entry, dict):
+                continue
+            if start <= date <= end:
+                results.append((fname, entry))
+    if not results:
+        console.print("[yellow]No matching logs found.[/yellow]")
+        return
+    for fname, entry in results:
+        panel = Panel(f"[b]Date:[/b] {entry['date']}\n[b]What I did:[/b] {entry['did']}\n[b]What I'll do:[/b] {entry['will_do']}\n[b]Blockers:[/b] {entry['blockers']}\n[b]Tags:[/b] {', '.join(entry['tags']) if entry['tags'] else '-'}\n[b]Notes:[/b] {entry.get('notes','-')}", title=f"Log: {fname.replace('.json','')}", expand=False)
+        console.print(panel)
+
+
+def setup_email():
+    console.print(Panel("[bold yellow]Setup Email Export[/bold yellow]", expand=False))
+    user = Prompt.ask("Enter your Gmail address")
+    password = Prompt.ask("Enter your Gmail app password (see README)", password=True)
+    to = Prompt.ask("Enter recipient email (yourself or team)", default=user)
+    config = {"user": user, "password": password, "to": to}
+    with open(EMAIL_CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=2)
+    console.print("[green]Email config saved![/green]")
+
+
+def email_weekly_logs():
+    if not os.path.exists(EMAIL_CONFIG_PATH):
+        console.print("[yellow]No email config found. Please run setup first.[/yellow]")
+        setup_email()
+    with open(EMAIL_CONFIG_PATH) as f:
+        config = json.load(f)
+    files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json')])
+    if not files:
+        console.print("[red]No logs to email.[/red]")
+        return
+    # Get last 7 days
+    from datetime import timedelta
+    today = datetime.now().date()
+    week_files = []
+    for fname in files:
+        try:
+            d = datetime.strptime(fname.replace('.json',''), "%Y-%m-%d").date()
+            if (today - d).days < 7:
+                week_files.append(fname)
+        except Exception:
+            continue
+    if not week_files:
+        console.print("[yellow]No logs from the past week.[/yellow]")
+        return
+    week_files.sort()
+    body = "# StandLog Weekly Report\n\n"
+    for fname in week_files:
+        with open(os.path.join(DATA_DIR, fname)) as f:
+            entry = json.load(f)
+        body += f"## {fname.replace('.json', '')}\n- **Did:** {entry['did']}\n- **Will do:** {entry['will_do']}\n- **Blockers:** {entry['blockers']}\n- **Tags:** {', '.join(entry['tags']) if entry['tags'] else '-'}\n- **Notes:** {entry.get('notes','-')}\n\n"
+    yag = yagmail.SMTP(config['user'], config['password'])
+    yag.send(config['to'], "StandLog Weekly Report", body)
+    console.print(f"[green]Weekly logs emailed to {config['to']}![/green]")
+
+
+# --- Automation Rules Engine ---
+def load_automation_rules():
+    if not os.path.exists(AUTOMATION_RULES_PATH):
+        return []
+    with open(AUTOMATION_RULES_PATH) as f:
+        try:
+            return json.load(f)
+        except Exception:
+            return []
+
+def save_automation_rules(rules):
+    with open(AUTOMATION_RULES_PATH, "w") as f:
+        json.dump(rules, f, indent=2)
+
+def automation_rules_menu():
+    while True:
+        console.print("\n[bold cyan]Automation Rules[/bold cyan]")
+        console.print("[1] List rules\n[2] Add rule\n[3] Remove rule\n[4] Back")
+        choice = Prompt.ask("Choose an option", choices=["1","2","3","4"], default="1")
+        rules = load_automation_rules()
         if choice == "1":
-            show_weekly_stats()
+            if not rules:
+                console.print("[yellow]No automation rules defined.[/yellow]")
+            for idx, rule in enumerate(rules):
+                console.print(f"[{idx+1}] IF {rule['if']} THEN {rule['then']}")
         elif choice == "2":
-            export_logs("md")
+            trigger = Prompt.ask("Enter trigger (calendar_event, git_commit, uptime, time_of_day)")
+            action = Prompt.ask("Enter action (remind, auto_log, email)")
+            value = Prompt.ask("Optional: value for trigger (e.g. 18:00 for time_of_day)", default="")
+            rules.append({"if": trigger, "then": action, "value": value})
+            save_automation_rules(rules)
+            console.print("[green]Rule added![/green]")
         elif choice == "3":
-            export_logs("json")
+            if not rules:
+                console.print("[yellow]No rules to remove.[/yellow]")
+                continue
+            for idx, rule in enumerate(rules):
+                console.print(f"[{idx+1}] IF {rule['if']} THEN {rule['then']}")
+            idx = Prompt.ask("Enter rule number to remove", choices=[str(i+1) for i in range(len(rules))])
+            del rules[int(idx)-1]
+            save_automation_rules(rules)
+            console.print("[green]Rule removed![/green]")
         elif choice == "4":
-            reminder()
-        elif choice == "5":
-            files = list_entry_files()
-            if not files:
-                console.print("[red]No entries to leave feedback on.[/red]")
-                continue
-            for idx, fname in enumerate(files):
-                console.print(f"[{idx+1}] {fname}")
-            idx = Prompt.ask("Select entry number", choices=[str(i+1) for i in range(len(files))])
-            leave_feedback(files[int(idx)-1])
-        elif choice == "6":
-            files = list_entry_files()
-            if not files:
-                console.print("[red]No entries to view feedback for.[/red]")
-                continue
-            for idx, fname in enumerate(files):
-                console.print(f"[{idx+1}] {fname}")
-            idx = Prompt.ask("Select entry number", choices=[str(i+1) for i in range(len(files))])
-            view_feedback(files[int(idx)-1])
-        elif choice == "7":
-            set_encryption()
-        elif choice == "8":
-            unset_encryption()
-        elif choice == "9":
-            show_heatmap()
-        elif choice == "10":
             break
+
+def evaluate_automation_rules(context):
+    rules = load_automation_rules()
+    actions = []
+    now = datetime.now()
+    for rule in rules:
+        trig = rule.get('if')
+        val = rule.get('value','')
+        if trig == 'calendar_event' and context.get('calendar_event'):
+            actions.append(rule['then'])
+        elif trig == 'git_commit' and context.get('git_commit'):
+            actions.append(rule['then'])
+        elif trig == 'uptime' and context.get('uptime'):
+            actions.append(rule['then'])
+        elif trig == 'time_of_day' and val:
+            try:
+                h, m = map(int, val.split(":"))
+                if now.hour == h and abs(now.minute - m) < 10:
+                    actions.append(rule['then'])
+            except Exception:
+                pass
+    return actions
+
+
+def build_contextual_links():
+    """
+    Scan all logs and goals, auto-link related logs (by tags/keywords/date),
+    link logs to goals if goal keywords appear in log, and feedback to logs.
+    Store links in each log file as a 'links' field.
+    """
+    # Load all logs
+    logs = {}
+    files = [f for f in os.listdir(DATA_DIR) if f.endswith('.json') and re.match(r'\d{4}-\d{2}-\d{2}\.json$', f)]
+    for fname in files:
+        with open(os.path.join(DATA_DIR, fname)) as f:
+            try:
+                logs[fname] = json.load(f)
+            except Exception:
+                continue
+    # Load goals
+    goals = []
+    if os.path.exists(GOALS_PATH):
+        with open(GOALS_PATH) as f:
+            try:
+                goals = json.load(f)
+            except Exception:
+                goals = []
+    # Build links
+    tag_map = defaultdict(list)
+    for fname, entry in logs.items():
+        for tag in entry.get('tags', []):
+            tag_map[tag.lower()].append(fname)
+    # Link logs by shared tags
+    for fname, entry in logs.items():
+        links = set()
+        for tag in entry.get('tags', []):
+            for other in tag_map[tag.lower()]:
+                if other != fname:
+                    links.add(other)
+        # Link to goals if goal keywords appear in log fields
+        goal_links = []
+        for idx, goal in enumerate(goals):
+            goal_kw = goal['goal'].lower()
+            if (goal_kw in entry.get('did', '').lower() or
+                goal_kw in entry.get('will_do', '').lower() or
+                goal_kw in entry.get('notes', '').lower()):
+                goal_links.append(idx)
+        # Feedback links (if feedback is stored in log)
+        feedback_links = []
+        if 'feedback' in entry:
+            feedback_links.append(fname + ':feedback')
+        # Save links
+        entry['links'] = {
+            'related_logs': sorted(list(links)),
+            'goals': goal_links,
+            'feedback': feedback_links
+        }
+        with open(os.path.join(DATA_DIR, fname), 'w') as f:
+            json.dump( indent=2)
+
+def render_knowledge_graph():
+    """
+    Render a simple ASCII/text knowledge graph of logs, goals, and feedback links.
+    """
+    # Load logs and goals
+    logs = {}
+    files = [f for f in os.listdir(DATA_DIR) if f.endswith('.json') and re.match(r'\d{4}-\d{2}-\d{2}\.json$', f)]
+    for fname in files:
+        with open(os.path.join(DATA_DIR, fname)) as f:
+            try:
+                logs[fname] = json.load(f)
+            except Exception:
+                continue
+    goals = []
+    if os.path.exists(GOALS_PATH):
+        with open(GOALS_PATH) as f:
+            try:
+                goals = json.load(f)
+            except Exception:
+                goals = []
+    # Build nodes and edges
+    nodes = []
+    edges = []
+    for fname, entry in logs.items():
+        nodes.append(f"[log] {fname.replace('.json','')}")
+        for rel in entry.get('links', {}).get('related_logs', []):
+            edges.append((f"[log] {fname.replace('.json','')}", f"[log] {rel.replace('.json','')}", 'tag'))
+        for goal_idx in entry.get('links', {}).get('goals', []):
+            if goal_idx < len(goals):
+                edges.append((f"[log] {fname.replace('.json','')}", f"[goal] {goals[goal_idx]['goal']}", 'goal'))
+        for fb in entry.get('links', {}).get('feedback', []):
+            edges.append((f"[log] {fname.replace('.json','')}", f"[feedback] {fname.replace('.json','')}", 'feedback'))
+    for idx, goal in enumerate(goals):
+        nodes.append(f"[goal] {goal['goal']}")
+    # Render as ASCII graph (simple indented tree)
+    console.print(Panel("[bold magenta]StandLog Knowledge Graph[/bold magenta]", expand=False))
+    for node in nodes:
+        console.print(f"[bold]{node}[/bold]")
+        for edge in edges:
+            if edge[0] == node:
+                if edge[2] == 'tag':
+                    console.print(f"   └─[cyan]related log[/cyan]→ {edge[1]}")
+                elif edge[2] == 'goal':
+                    console.print(f"   └─[green]linked goal[/green]→ {edge[1]}")
+                elif edge[2] == 'feedback':
+                    console.print(f"   └─[yellow]feedback[/yellow]→ {edge[1]}")
+
+
