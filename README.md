@@ -19,13 +19,11 @@ A beautiful, developer-centric terminal journal and standup logger.
 
 ---
 
-## 📸 Screenshots / Demos
+## 📸 Screenshots / video Demos
 
-<!-- Add your screenshots or demo GIFs here -->
-- ![Main Menu](screenshots/main_menu.png)
-- ![Weekly Stats](screenshots/weekly_stats.png)
-- ![Heatmap](screenshots/heatmap.png)
-- ![ASCII Animation](screenshots/ascii_animation.gif)
+- ![Main Menu](https://github.com/rakesh-uwu/standlog/blob/main/asset/home.png)
+
+# video link: https://youtu.be/8AKgYASbgck
 
 ---
 
