@@ -23,7 +23,7 @@ A beautiful, developer-centric terminal journal and standup logger.
 
 - ![Main Menu](https://github.com/rakesh-uwu/standlog/blob/main/asset/home.png)
 
-# video link: https://youtu.be/8AKgYASbgck
+### video link: https://youtu.be/8AKgYASbgck
 
 ---
 
