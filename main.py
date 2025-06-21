@@ -505,7 +505,7 @@ def build_contextual_links():
             'feedback': feedback_links
         }
         with open(os.path.join(DATA_DIR, fname), 'w') as f:
-            json.dump( indent=2)
+            json.dump(entry, f, indent=2)
 
 def render_knowledge_graph():
     """
@@ -555,3 +555,121 @@ def render_knowledge_graph():
                     console.print(f"   └─[yellow]feedback[/yellow]→ {edge[1]}")
 
 
+def print_ascii_art():
+    from rich.text import Text
+    from rich.align import Align
+    from rich.style import Style
+    from rich.panel import Panel
+    from rich.console import Group
+    import time
+    art_lines = [
+        ("   _____ _             _      _                _     _     _ ", "magenta"),
+        ("  / ____| |           | |    | |              | |   | |   | |", "blue"),
+        (" | (___ | |_ __ _ _ __| | __ | |     ___   ___| | __| | __| |", "cyan"),
+        ("  \\___ \\| __/ _` | '__| |/ / | |    / _ \\ / __| |/ _` |/ _` |", "green"),
+        ("  ____) | || (_| | |  |   <  | |___| (_) | (__| | (_| | (_| |", "yellow"),
+        (" |_____/ \\__\\__,_|_|  |_|\\_\\ |______\\___/ \\___|_|\\__,_|\\__,_|", "red")
+    ]
+    art = "\n".join([f"[bold {color}]{line}[/bold {color}]" for line, color in art_lines])
+    # Colorful square ASCII clock
+    from datetime import datetime
+    now = datetime.now()
+    date_str = now.strftime("%A, %d %B %Y")
+    time_str = now.strftime("%H:%M:%S")
+    clock_art = f"""
+[bold white]┌───────────────┐
+│   [cyan]{time_str}[/cyan]   │
+│ [yellow]{date_str}[/yellow] │
+└───────────────┘[/bold white]
+"""
+    # Footer
+    footer = Align.center("[dim]made with :heart: by dev for dev[/dim]", style="bold magenta")
+    # Group all together
+    group = Group(
+        Align.center(Text.from_markup(art)),
+        Align.center(Text.from_markup(clock_art)),
+        Align.center("[bold cyan]Welcome to StandLog CLI![/bold cyan] :notebook_with_decorative_cover: :sparkles:"),
+        Align.center("[dim]Your beautiful terminal developer journal[/dim]"),
+        footer,
+        Text("\n")
+    )
+    console.print(group)
+
+
+def main_menu():
+    print_ascii_art()
+    show_goal_progress()
+    show_badges()
+    while True:
+        reminder()
+        console.print("\n[bold cyan]StandLog CLI[/bold cyan]", style="bold")
+        console.print("[1] Log today's standup\n[2] View today's log\n[3] Stats/Export/Reminder\n[4] Set weekly goals\n[5] Mark goal progress\n[6] Search logs\n[7] Email weekly logs\n[8] Knowledge Graph\n[9] Time Tracking Stats\n[10] Automation Rules\n[11] Quit")
+        choice = Prompt.ask("Choose an option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"], default="1")
+        if choice == "1":
+            log_entry()
+        elif choice == "2":
+            view_entry()
+        elif choice == "3":
+            viewer_menu()
+        elif choice == "4":
+            set_weekly_goals()
+        elif choice == "5":
+            mark_goal_progress()
+        elif choice == "6":
+            search_logs()
+        elif choice == "7":
+            email_weekly_logs()
+        elif choice == "8":
+            knowledge_graph_menu()
+        elif choice == "9":
+            time_tracking_stats()
+        elif choice == "10":
+            automation_rules_menu()
+        elif choice == "11":
+            console.print("[bold yellow]Goodbye![/bold yellow]")
+            break
+
+
+def knowledge_graph_menu():
+    build_contextual_links()
+    render_knowledge_graph()
+    Prompt.ask("Press Enter to return to main menu")
+
+def time_tracking_stats():
+    """
+    Show time spent per day/week and a simple bar chart in the terminal.
+    """
+    files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json') and re.match(r'\d{4}-\d{2}-\d{2}\.json$', f)])
+    if not files:
+        console.print("[yellow]No logs to show time tracking stats.[/yellow]")
+        return
+    # Collect time per day
+    day_times = []
+    for fname in files:
+        with open(os.path.join(DATA_DIR, fname)) as f:
+            try:
+                entry = json.load(f)
+            except Exception:
+                continue
+        t = entry.get('time_spent', 0)
+        try:
+            t = int(t)
+        except Exception:
+            t = 0
+        day_times.append((fname.replace('.json',''), t))
+    # Show table and bar chart
+    console.print(Panel("[bold blue]Time Tracking Stats[/bold blue]", expand=False))
+    total = sum(t for _, t in day_times)
+    console.print(f"[bold]Total time logged:[/bold] {total} min ({total//60}h {total%60}m)")
+    for day, t in day_times[-7:]:
+        bar = "[green]" + "█"*(t//10) + "[/green]" if t else ""
+        console.print(f"[bold]{day}[/bold]: {t} min {bar}")
+    Prompt.ask("Press Enter to return to main menu")
+
+
+def main():
+    ensure_data_dir()
+    main_menu()
+
+if __name__ == "__main__":
+    main()
