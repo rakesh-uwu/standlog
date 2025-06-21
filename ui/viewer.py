@@ -1,3 +1,4 @@
+# Viewer UI for StandLog CLI
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -312,3 +313,73 @@ def show_heatmap():
         if streak > max_streak:
             max_streak = streak
         prev = d_obj
+    # Color gradient: 1 log = green, 2 = yellow, 3+ = red, no log = grey
+    months = []
+    for month in range(1, 13):
+        cal = calendar.monthcalendar(year, month)
+        month_name = calendar.month_abbr[month]
+        lines = [f"[bold]{month_name}[/bold]"]
+        for week in cal:
+            week_str = ""
+            for day in week:
+                if day == 0:
+                    week_str += "   "
+                else:
+                    dstr = f"{year}-{month:02d}-{day:02d}"
+                    count = log_days.get(dstr, 0)
+                    if count == 0:
+                        week_str += "[grey]·[/grey] "
+                    elif count == 1:
+                        week_str += "[color(46)]■[/color(46)] "  # green
+                    elif count == 2:
+                        week_str += "[color(226)]■[/color(226)] "  # yellow
+                    else:
+                        week_str += "[color(196)]■[/color(196)] "  # red
+            lines.append(week_str)
+        months.append(Text("\n".join(lines)))
+    legend = Text("[color(46)]■[/color(46)] 1 log  [color(226)]■[/color(226)] 2 logs  [color(196)]■[/color(196)] 3+ logs  [grey]·[/grey] no log", justify="center")
+    stats = f"[cyan]Total logs:[/cyan] {len(files)}   [cyan]Longest streak:[/cyan] {max_streak} days"
+    console.print(Panel(Columns(months, equal=True, expand=True), title="Journal Activity Heatmap", expand=True))
+    console.print(legend)
+    console.print(stats)
+
+
+def viewer_menu():
+    while True:
+        console.print("\n[bold cyan]StandLog Viewer[/bold cyan]")
+        console.print("[1] Show weekly stats\n[2] Export as Markdown\n[3] Export as JSON\n[4] Reminder\n[5] Leave feedback\n[6] View feedback\n[7] Enable encryption\n[8] Disable encryption\n[9] Visualize journal (heatmap)\n[10] Back")
+        choice = Prompt.ask("Choose an option", choices=[str(i) for i in range(1,11)], default="1")
+        if choice == "1":
+            show_weekly_stats()
+        elif choice == "2":
+            export_logs("md")
+        elif choice == "3":
+            export_logs("json")
+        elif choice == "4":
+            reminder()
+        elif choice == "5":
+            files = list_entry_files()
+            if not files:
+                console.print("[red]No entries to leave feedback on.[/red]")
+                continue
+            for idx, fname in enumerate(files):
+                console.print(f"[{idx+1}] {fname}")
+            idx = Prompt.ask("Select entry number", choices=[str(i+1) for i in range(len(files))])
+            leave_feedback(files[int(idx)-1])
+        elif choice == "6":
+            files = list_entry_files()
+            if not files:
+                console.print("[red]No entries to view feedback for.[/red]")
+                continue
+            for idx, fname in enumerate(files):
+                console.print(f"[{idx+1}] {fname}")
+            idx = Prompt.ask("Select entry number", choices=[str(i+1) for i in range(len(files))])
+            view_feedback(files[int(idx)-1])
+        elif choice == "7":
+            set_encryption()
+        elif choice == "8":
+            unset_encryption()
+        elif choice == "9":
+            show_heatmap()
+        elif choice == "10":
+            break
