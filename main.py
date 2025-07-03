@@ -1,5 +1,5 @@
-# StandLog CLI - All-in-one
 from ui.viewer import viewer_menu, reminder
+from ui.pomodoro import pomodoro_menu
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
@@ -45,9 +45,6 @@ def multiline_input(prompt):
         lines.append(line)
     return "\n".join(lines)
 
-
-# Helper to load/save badges
-
 def load_badges():
     if not os.path.exists(BADGES_PATH):
         return {}
@@ -74,7 +71,7 @@ def show_badges():
 
 
 def record_voice_note():
-    fs = 44100  # Sample rate
+    fs = 44100  
     try:
         devices = sd.query_devices()
         input_devices = [d for d in devices if d.get('max_input_channels', 0) > 0]
@@ -118,7 +115,6 @@ def play_voice_note(log_path):
     sd.play(data, fs)
     sd.wait()
 
-
 def log_entry():
     console.print(Panel("[bold cyan]StandLog CLI - Daily Standup[/bold cyan]", expand=False))
     did = multiline_input("What did you work on today?")
@@ -126,12 +122,16 @@ def log_entry():
     blockers = multiline_input("Any blockers?")
     tags = Prompt.ask("[magenta]Tags (comma separated, optional)[/magenta]", default="")
     notes = multiline_input("Any additional notes? (optional)")
-    # Time tracking
     time_spent = Prompt.ask("[yellow]Time spent today (in minutes, e.g. 90)[/yellow]", default="0")
     try:
         time_spent = int(time_spent)
     except Exception:
         time_spent = 0
+    
+    from ui.mood import select_mood, log_mood, MOOD_EMOJIS
+    console.print("\n[bold cyan]Mood Tracking[/bold cyan]")
+    mood = select_mood()
+    
     attach_voice = Prompt.ask("Record a voice note? (y/n)", choices=["y","n"], default="n")
     voice_path = None
     if attach_voice == "y":
@@ -145,7 +145,9 @@ def log_entry():
         "tags": [t.strip() for t in tags.split(",") if t.strip()],
         "notes": notes,
         "voice_note": None,
-        "time_spent": time_spent
+        "time_spent": time_spent,
+        "pomodoro_count": 0,
+        "mood": mood
     }
     path = get_today_path()
     is_first_log = not os.path.exists(path)
@@ -159,7 +161,6 @@ def log_entry():
     console.print("[bold green]Entry saved![/bold green]")
     if is_first_log:
         award_badge("First Log")
-    # Streak badge
     import re
     files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json') and re.match(r'\d{4}-\d{2}-\d{2}\.json$', f)])
     streak = 0
@@ -186,13 +187,21 @@ def view_entry():
         return
     with open(path) as f:
         entry = json.load(f)
-    panel = Panel(f"[b]What I did:[/b] {entry['did']}\n[b]What I'll do:[/b] {entry['will_do']}\n[b]Blockers:[/b] {entry['blockers']}\n[b]Tags:[/b] {', '.join(entry['tags']) if entry['tags'] else '-'}\n[b]Notes:[/b] {entry.get('notes','-')}\n[b]Date:[/b] {entry['date']}", title="Today's Log", expand=False)
+    pomodoro_info = f"\n[b]Pomodoros completed:[/b] {entry.get('pomodoro_count', 0)}" if entry.get('pomodoro_count', 0) > 0 else ""
+    mood_info = ""
+    if entry.get('mood'):
+        from ui.mood import MOOD_EMOJIS, MOOD_COLORS
+        mood = entry.get('mood')
+        mood_text = MOOD_EMOJIS.get(mood, "Unknown")
+        mood_color = MOOD_COLORS.get(mood, "white")
+        mood_info = f"\n[b]Mood:[/b] [{mood_color}]{mood_text}[/{mood_color}]"
+    
+    panel = Panel(f"[b]What I did:[/b] {entry['did']}\n[b]What I'll do:[/b] {entry['will_do']}\n[b]Blockers:[/b] {entry['blockers']}\n[b]Tags:[/b] {', '.join(entry['tags']) if entry['tags'] else '-'}\n[b]Notes:[/b] {entry.get('notes','-')}\n[b]Time spent:[/b] {entry.get('time_spent', 0)} min{pomodoro_info}{mood_info}\n[b]Date:[/b] {entry['date']}", title="Today's Log", expand=False)
     console.print(panel)
     if entry.get("voice_note") or os.path.exists(os.path.join(VOICE_DIR, os.path.basename(path).replace('.json', '.wav'))):
         play = Prompt.ask("Play attached voice note? (y/n)", choices=["y","n"], default="n")
         if play == "y":
             play_voice_note(path)
-
 
 def set_weekly_goals():
     console.print(Panel("[bold yellow]Set your goals for this week! (Enter one per line, Enter twice to finish)[/bold yellow]", expand=False))
@@ -206,7 +215,6 @@ def set_weekly_goals():
     with open(GOALS_PATH, "w") as f:
         json.dump(goals, f, indent=2)
     console.print("[green]Goals saved![/green]")
-
 
 def mark_goal_progress():
     if not os.path.exists(GOALS_PATH):
@@ -232,7 +240,6 @@ def mark_goal_progress():
             json.dump(goals, f, indent=2)
         console.print("[green]Progress updated![/green]")
 
-
 def show_goal_progress():
     if not os.path.exists(GOALS_PATH):
         return
@@ -245,7 +252,6 @@ def show_goal_progress():
     percent = int((done/total)*100) if total else 0
     bar = "[green]" + "█"*done + "[/green][white]" + "█"*(total-done) + "[/white]"
     console.print(Panel(f"[bold]Weekly Goals Progress:[/bold]\n{bar} {done}/{total} ({percent}%)", style="bold blue", expand=False))
-
 
 def print_ascii_art():
     from rich.text import Text
@@ -274,9 +280,7 @@ def print_ascii_art():
 │ [yellow]{date_str}[/yellow] │
 └───────────────┘[/bold white]
 """
-    # Footer
     footer = Align.center("[dim]made with :heart: by dev for dev[/dim]", style="bold magenta")
-    # Group all together
     group = Group(
         Align.center(Text.from_markup(art)),
         Align.center(Text.from_markup(clock_art)),
@@ -286,7 +290,6 @@ def print_ascii_art():
         Text("\n")
     )
     console.print(group)
-
 
 def search_logs():
     files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json')])
@@ -333,10 +336,15 @@ def search_logs():
         console.print("[yellow]No matching logs found.[/yellow]")
         return
     for fname, entry in results:
-        panel = Panel(f"[b]Date:[/b] {entry['date']}\n[b]What I did:[/b] {entry['did']}\n[b]What I'll do:[/b] {entry['will_do']}\n[b]Blockers:[/b] {entry['blockers']}\n[b]Tags:[/b] {', '.join(entry['tags']) if entry['tags'] else '-'}\n[b]Notes:[/b] {entry.get('notes','-')}", title=f"Log: {fname.replace('.json','')}", expand=False)
+        mood_info = ""
+        if entry.get('mood'):
+            from ui.mood import MOOD_EMOJIS, MOOD_COLORS
+            mood = entry.get('mood')
+            mood_text = MOOD_EMOJIS.get(mood, "Unknown")
+            mood_color = MOOD_COLORS.get(mood, "white")
+            mood_info = f"\n[b]Mood:[/b] [{mood_color}]{mood_text}[/{mood_color}]"
+        panel = Panel(f"[b]Date:[/b] {entry['date']}\n[b]What I did:[/b] {entry['did']}\n[b]What I'll do:[/b] {entry['will_do']}\n[b]Blockers:[/b] {entry['blockers']}\n[b]Tags:[/b] {', '.join(entry['tags']) if entry['tags'] else '-'}\n[b]Notes:[/b] {entry.get('notes','-')}{mood_info}", title=f"Log: {fname.replace('.json','')}", expand=False)
         console.print(panel)
-
-
 def setup_email():
     console.print(Panel("[bold yellow]Setup Email Export[/bold yellow]", expand=False))
     user = Prompt.ask("Enter your Gmail address")
@@ -346,8 +354,6 @@ def setup_email():
     with open(EMAIL_CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
     console.print("[green]Email config saved![/green]")
-
-
 def email_weekly_logs():
     if not os.path.exists(EMAIL_CONFIG_PATH):
         console.print("[yellow]No email config found. Please run setup first.[/yellow]")
@@ -358,7 +364,6 @@ def email_weekly_logs():
     if not files:
         console.print("[red]No logs to email.[/red]")
         return
-    # Get last 7 days
     from datetime import timedelta
     today = datetime.now().date()
     week_files = []
@@ -381,9 +386,6 @@ def email_weekly_logs():
     yag = yagmail.SMTP(config['user'], config['password'])
     yag.send(config['to'], "StandLog Weekly Report", body)
     console.print(f"[green]Weekly logs emailed to {config['to']}![/green]")
-
-
-# --- Automation Rules Engine ---
 def load_automation_rules():
     if not os.path.exists(AUTOMATION_RULES_PATH):
         return []
@@ -457,7 +459,6 @@ def build_contextual_links():
     link logs to goals if goal keywords appear in log, and feedback to logs.
     Store links in each log file as a 'links' field.
     """
-    # Load all logs
     logs = {}
     files = [f for f in os.listdir(DATA_DIR) if f.endswith('.json') and re.match(r'\d{4}-\d{2}-\d{2}\.json$', f)]
     for fname in files:
@@ -466,7 +467,6 @@ def build_contextual_links():
                 logs[fname] = json.load(f)
             except Exception:
                 continue
-    # Load goals
     goals = []
     if os.path.exists(GOALS_PATH):
         with open(GOALS_PATH) as f:
@@ -474,19 +474,16 @@ def build_contextual_links():
                 goals = json.load(f)
             except Exception:
                 goals = []
-    # Build links
     tag_map = defaultdict(list)
     for fname, entry in logs.items():
         for tag in entry.get('tags', []):
             tag_map[tag.lower()].append(fname)
-    # Link logs by shared tags
     for fname, entry in logs.items():
         links = set()
         for tag in entry.get('tags', []):
             for other in tag_map[tag.lower()]:
                 if other != fname:
                     links.add(other)
-        # Link to goals if goal keywords appear in log fields
         goal_links = []
         for idx, goal in enumerate(goals):
             goal_kw = goal['goal'].lower()
@@ -494,11 +491,9 @@ def build_contextual_links():
                 goal_kw in entry.get('will_do', '').lower() or
                 goal_kw in entry.get('notes', '').lower()):
                 goal_links.append(idx)
-        # Feedback links (if feedback is stored in log)
         feedback_links = []
         if 'feedback' in entry:
             feedback_links.append(fname + ':feedback')
-        # Save links
         entry['links'] = {
             'related_logs': sorted(list(links)),
             'goals': goal_links,
@@ -511,7 +506,6 @@ def render_knowledge_graph():
     """
     Render a simple ASCII/text knowledge graph of logs, goals, and feedback links.
     """
-    # Load logs and goals
     logs = {}
     files = [f for f in os.listdir(DATA_DIR) if f.endswith('.json') and re.match(r'\d{4}-\d{2}-\d{2}\.json$', f)]
     for fname in files:
@@ -527,7 +521,6 @@ def render_knowledge_graph():
                 goals = json.load(f)
             except Exception:
                 goals = []
-    # Build nodes and edges
     nodes = []
     edges = []
     for fname, entry in logs.items():
@@ -541,7 +534,6 @@ def render_knowledge_graph():
             edges.append((f"[log] {fname.replace('.json','')}", f"[feedback] {fname.replace('.json','')}", 'feedback'))
     for idx, goal in enumerate(goals):
         nodes.append(f"[goal] {goal['goal']}")
-    # Render as ASCII graph (simple indented tree)
     console.print(Panel("[bold magenta]StandLog Knowledge Graph[/bold magenta]", expand=False))
     for node in nodes:
         console.print(f"[bold]{node}[/bold]")
@@ -571,7 +563,6 @@ def print_ascii_art():
         (" |_____/ \\__\\__,_|_|  |_|\\_\\ |______\\___/ \\___|_|\\__,_|\\__,_|", "red")
     ]
     art = "\n".join([f"[bold {color}]{line}[/bold {color}]" for line, color in art_lines])
-    # Colorful square ASCII clock
     from datetime import datetime
     now = datetime.now()
     date_str = now.strftime("%A, %d %B %Y")
@@ -582,9 +573,7 @@ def print_ascii_art():
 │ [yellow]{date_str}[/yellow] │
 └───────────────┘[/bold white]
 """
-    # Footer
     footer = Align.center("[dim]made with :heart: by dev for dev[/dim]", style="bold magenta")
-    # Group all together
     group = Group(
         Align.center(Text.from_markup(art)),
         Align.center(Text.from_markup(clock_art)),
@@ -594,8 +583,6 @@ def print_ascii_art():
         Text("\n")
     )
     console.print(group)
-
-
 def main_menu():
     print_ascii_art()
     show_goal_progress()
@@ -603,8 +590,8 @@ def main_menu():
     while True:
         reminder()
         console.print("\n[bold cyan]StandLog CLI[/bold cyan]", style="bold")
-        console.print("[1] Log today's standup\n[2] View today's log\n[3] Stats/Export/Reminder\n[4] Set weekly goals\n[5] Mark goal progress\n[6] Search logs\n[7] Email weekly logs\n[8] Knowledge Graph\n[9] Time Tracking Stats\n[10] Automation Rules\n[11] Quit")
-        choice = Prompt.ask("Choose an option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"], default="1")
+        console.print("[1] Log today's standup\n[2] View today's log\n[3] Stats/Export/Reminder\n[4] Set weekly goals\n[5] Mark goal progress\n[6] Search logs\n[7] Email weekly logs\n[8] Knowledge Graph\n[9] Time Tracking Stats\n[10] Automation Rules\n[11] Pomodoro Timer\n[12] Mood Tracking\n[13] Customizable Dashboard\n[14] Quit")
+        choice = Prompt.ask("Choose an option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"], default="1")
         if choice == "1":
             log_entry()
         elif choice == "2":
@@ -626,25 +613,31 @@ def main_menu():
         elif choice == "10":
             automation_rules_menu()
         elif choice == "11":
+            pomodoro_menu()
+        elif choice == "12":
+            from ui.mood import mood_menu
+            mood_menu()
+        elif choice == "13":
+            from ui.dashboard import dashboard_menu
+            dashboard_menu()
+        elif choice == "14":
             console.print("[bold yellow]Goodbye![/bold yellow]")
             break
-
-
 def knowledge_graph_menu():
     build_contextual_links()
     render_knowledge_graph()
     Prompt.ask("Press Enter to return to main menu")
-
 def time_tracking_stats():
     """
     Show time spent per day/week and a simple bar chart in the terminal.
+    Also includes Pomodoro statistics.
     """
     files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json') and re.match(r'\d{4}-\d{2}-\d{2}\.json$', f)])
     if not files:
         console.print("[yellow]No logs to show time tracking stats.[/yellow]")
         return
-    # Collect time per day
     day_times = []
+    day_pomodoros = []
     for fname in files:
         with open(os.path.join(DATA_DIR, fname)) as f:
             try:
@@ -657,19 +650,33 @@ def time_tracking_stats():
         except Exception:
             t = 0
         day_times.append((fname.replace('.json',''), t))
-    # Show table and bar chart
+        p = entry.get('pomodoro_count', 0)
+        try:
+            p = int(p)
+        except Exception:
+            p = 0
+        day_pomodoros.append((fname.replace('.json',''), p))
     console.print(Panel("[bold blue]Time Tracking Stats[/bold blue]", expand=False))
     total = sum(t for _, t in day_times)
     console.print(f"[bold]Total time logged:[/bold] {total} min ({total//60}h {total%60}m)")
     for day, t in day_times[-7:]:
         bar = "[green]" + "█"*(t//10) + "[/green]" if t else ""
         console.print(f"[bold]{day}[/bold]: {t} min {bar}")
+    total_pomodoros = sum(p for _, p in day_pomodoros)
+    if total_pomodoros > 0:
+        console.print("\n[bold magenta]Pomodoro Stats[/bold magenta]")
+        console.print(f"[bold]Total Pomodoros completed:[/bold] {total_pomodoros}")
+        for day, p in day_pomodoros[-7:]:
+            if p > 0:
+                bar = "[magenta]" + "●"*p + "[/magenta]"
+                console.print(f"[bold]{day}[/bold]: {p} pomodoros {bar}")
+        avg_pomodoros_per_day = total_pomodoros / len(files)
+        console.print(f"[bold]Average Pomodoros per day:[/bold] {avg_pomodoros_per_day:.1f}")
+        focus_time = total_pomodoros * 25
+        console.print(f"[bold]Estimated focus time:[/bold] {focus_time} min ({focus_time//60}h {focus_time%60}m)")
     Prompt.ask("Press Enter to return to main menu")
-
-
 def main():
     ensure_data_dir()
     main_menu()
-
 if __name__ == "__main__":
     main()

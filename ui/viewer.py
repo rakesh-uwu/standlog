@@ -1,4 +1,3 @@
-# Viewer UI for StandLog CLI
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -24,8 +23,6 @@ BADGES_PATH = os.path.expanduser("~/.standlog/badges.json")
 DATA_DIR = os.path.expanduser("~/.standlog/entries")
 ENCRYPTION_KEY_PATH = os.path.expanduser("~/.standlog/.key")
 console = Console()
-
-# Helper to load/save badges
 
 def load_badges():
     if not os.path.exists(BADGES_PATH):
@@ -105,10 +102,8 @@ def load_entry(filename):
         with open(path, "rb") as f:
             raw = f.read()
         try:
-            # Try to decode as utf-8 (plain)
             return json.loads(raw.decode())
         except Exception:
-            # Try to decrypt
             text = decrypt_data(raw)
             return json.loads(text)
     except Exception as e:
@@ -183,19 +178,36 @@ def show_weekly_stats():
     table.add_column("Date", style="cyan")
     table.add_column("Did", style="green")
     table.add_column("Blockers", style="red")
+    table.add_column("Mood", style="magenta")
     blockers_count = {}
     streak = 0
     prev_date = None
+    mood_data = []
+    
+    try:
+        from ui.mood import MOOD_EMOJIS, MOOD_COLORS
+        has_mood_module = True
+    except ImportError:
+        has_mood_module = False
+    
     for fname in last_7:
         entry = load_entry(fname)
         if not entry:
             continue
         date = fname.replace('.json', '')
-        table.add_row(date, entry['did'][:20], entry['blockers'][:20])
+        
+        mood_display = "-"
+        if has_mood_module and entry.get('mood'):
+            mood = entry.get('mood')
+            mood_text = MOOD_EMOJIS.get(mood, "Unknown")
+            mood_color = MOOD_COLORS.get(mood, "white")
+            mood_display = f"[{mood_color}]{mood_text.split()[0]}[/{mood_color}]"  # Just show the emoji
+            mood_data.append(int(mood) if mood.isdigit() else 3)  # Default to neutral if not a digit
+        
+        table.add_row(date, entry['did'][:20], entry['blockers'][:20], mood_display)
         if entry['blockers']:
             for word in entry['blockers'].split():
                 blockers_count[word] = blockers_count.get(word, 0) + 1
-        # Streak calculation
         d = datetime.strptime(date, "%Y-%m-%d")
         if prev_date is None or (d - prev_date).days == 1:
             streak += 1
@@ -207,6 +219,11 @@ def show_weekly_stats():
         common = max(blockers_count, key=blockers_count.get)
         console.print(f"[bold yellow]Most common blocker:[/bold yellow] {common}")
     console.print(f"[bold green]Logging streak:[/bold green] {streak} days")
+    
+    if mood_data:
+        avg_mood = sum(mood_data) / len(mood_data)
+        mood_trend = "↗️" if mood_data[-1] > avg_mood else "↘️" if mood_data[-1] < avg_mood else "→"
+        console.print(f"[bold magenta]Average mood:[/bold magenta] {avg_mood:.1f} {mood_trend}")
 
 
 def export_logs(fmt="md"):
@@ -220,7 +237,20 @@ def export_logs(fmt="md"):
             entry = load_entry(fname)
             if not entry:
                 continue
-            out += f"## {fname.replace('.json', '')}\n- **Did:** {entry['did']}\n- **Will do:** {entry['will_do']}\n- **Blockers:** {entry['blockers']}\n- **Tags:** {', '.join(entry['tags']) if entry['tags'] else '-'}\n\n"
+            pomodoro_info = f"\n- **Pomodoros completed:** {entry.get('pomodoro_count', 0)}" if entry.get('pomodoro_count', 0) > 0 else ""
+            time_info = f"\n- **Time spent:** {entry.get('time_spent', 0)} minutes" if entry.get('time_spent', 0) > 0 else ""
+            
+            mood_info = ""
+            if entry.get('mood'):
+                try:
+                    from ui.mood import MOOD_EMOJIS
+                    mood = entry.get('mood')
+                    mood_text = MOOD_EMOJIS.get(mood, "Unknown")
+                    mood_info = f"\n- **Mood:** {mood_text}"
+                except ImportError:
+                    pass
+            
+            out += f"## {fname.replace('.json', '')}\n- **Did:** {entry['did']}\n- **Will do:** {entry['will_do']}\n- **Blockers:** {entry['blockers']}\n- **Tags:** {', '.join(entry['tags']) if entry['tags'] else '-'}{time_info}{pomodoro_info}{mood_info}\n\n"
         md_path = os.path.expanduser("~/.standlog/journal.md")
         os.makedirs(os.path.dirname(md_path), exist_ok=True)
         with open(md_path, "w") as f:
@@ -240,7 +270,6 @@ def reminder():
     today_path = os.path.join(DATA_DIR, f"{today}.json")
     already_logged = os.path.exists(today_path)
     context_msgs = []
-    # Calendar event check (local .ics file)
     ics_files = glob.glob(os.path.expanduser("~/*.ics"))
     if ics is None:
         context_msgs.append("[red]Install the 'ics' package for calendar-based reminders: pip install ics[/red]")
@@ -253,7 +282,6 @@ def reminder():
                     context_msgs.append(f"You had a calendar event today: {event.name}")
             except Exception:
                 pass
-    # Git activity check (commits today) - only if git is available
     if shutil.which("git"):
         try:
             git_dir = os.path.expanduser("~")
@@ -264,7 +292,6 @@ def reminder():
                 context_msgs.append("You made git commits today!")
         except Exception:
             pass
-    # System usage check (uptime > 2h today) - only if uptime is available and not on Windows
     if shutil.which("uptime") and platform.system() != "Windows":
         try:
             uptime = subprocess.check_output(["uptime", "-p"]).decode()
@@ -299,7 +326,6 @@ def show_heatmap():
     for fname in files:
         date = fname.replace('.json', '')
         log_days[date] += 1
-    # Calculate streaks
     all_dates = sorted(log_days.keys())
     streak = 0
     max_streak = 0
@@ -313,7 +339,6 @@ def show_heatmap():
         if streak > max_streak:
             max_streak = streak
         prev = d_obj
-    # Color gradient: 1 log = green, 2 = yellow, 3+ = red, no log = grey
     months = []
     for month in range(1, 13):
         cal = calendar.monthcalendar(year, month)
@@ -330,11 +355,11 @@ def show_heatmap():
                     if count == 0:
                         week_str += "[grey]·[/grey] "
                     elif count == 1:
-                        week_str += "[color(46)]■[/color(46)] "  # green
+                        week_str += "[color(46)]■[/color(46)] "  
                     elif count == 2:
-                        week_str += "[color(226)]■[/color(226)] "  # yellow
+                        week_str += "[color(226)]■[/color(226)] "  
                     else:
-                        week_str += "[color(196)]■[/color(196)] "  # red
+                        week_str += "[color(196)]■[/color(196)] "  
             lines.append(week_str)
         months.append(Text("\n".join(lines)))
     legend = Text("[color(46)]■[/color(46)] 1 log  [color(226)]■[/color(226)] 2 logs  [color(196)]■[/color(196)] 3+ logs  [grey]·[/grey] no log", justify="center")
